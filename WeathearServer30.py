@@ -1,5 +1,6 @@
 import asyncio
 import requests
+import socket
 from datetime import datetime, timedelta
 from pymodbus.server import ModbusTcpServer
 from pymodbus.datastore import ModbusServerContext, ModbusSlaveContext
@@ -13,7 +14,7 @@ LON = 34.856
 WEATHER_URL = f"http://api.openweathermap.org/data/2.5/forecast?lat={LAT}&lon={LON}&appid={API_KEY}&units=metric"
 
 # --- Decision Parameters ---
-CLOUD_THRESHOLD = 20
+CLOUD_THRESHOLD = 22
 TEMP_THRESHOLD = 24
 SOLAR_WEATHER_CODES = ['clear sky', 'few clouds']
 
@@ -63,7 +64,6 @@ def get_tomorrow_weather_and_decision():
         solar_is_sufficient = is_low_cloud and is_solar_favorable and is_warm
         decision_flag = 0 if solar_is_sufficient else 1
 
-        # Map description to code
         weather_code = {
             'clear sky': 1,
             'few clouds': 2,
@@ -83,20 +83,33 @@ def get_tomorrow_weather_and_decision():
         print(f"Error: {e}")
         return 1, 100, 15, 99
 
+# --- Daily Update Loop ---
+async def update_weather_daily():
+    while True:
+        now = datetime.now()
+        if now.hour == 3:
+            print("⏰ Running daily weather update...")
+            decision, cloud, temp, code = get_tomorrow_weather_and_decision()
+            store.setValues(3, 30, [decision])
+            store.setValues(3, 31, [int(cloud)])
+            store.setValues(3, 32, [int(temp)])
+            store.setValues(3, 33, [code])
+            await asyncio.sleep(3600)  # Wait an hour to avoid duplicate run
+        else:
+            await asyncio.sleep(60)  # Check again in a minute
+
 # --- Async Server ---
 async def run_server():
-    # Get weather data
-    decision, cloud, temp, code = get_tomorrow_weather_and_decision()
+    # Get local IP address
+    hostname = socket.gethostname()
+    local_ip = socket.gethostbyname(hostname)
+    print(f"🌐 Server starting on IP: {local_ip}, port: 5020")
 
-    # Write to Modbus registers
-    store.setValues(3, 30, [decision])
-    store.setValues(3, 31, [int(cloud)])
-    store.setValues(3, 32, [int(temp)])
-    store.setValues(3, 33, [code])
-
-    # Start server
-    server = ModbusTcpServer(context, identity=identity, address=("192.168.1.185", 5020), defer_start=True)
-    await server.serve_forever()
+    server = ModbusTcpServer(context, identity=identity, address=("0.0.0.0", 5020), defer_start=True)
+    await asyncio.gather(
+        server.serve_forever(),
+        update_weather_daily()
+    )
 
 if __name__ == "__main__":
     asyncio.run(run_server())
